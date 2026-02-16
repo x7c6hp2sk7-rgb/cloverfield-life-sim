@@ -100,21 +100,28 @@ export class GameScene extends Phaser.Scene {
 
     this.waterTiles = [];
     this.decorSprites = [];
+    this.props = [];
+    this.lanternGlows = [];
 
     this.drawWorld();
     this.createDecorations();
+    this.createSetPieces();
     this.createPlayer();
     this.createNpc();
     this.createAtmosphere();
     this.createInput();
     this.createUI();
 
-    this.loadFromStorage();
+    const loaded = this.loadFromStorage();
+    if (!loaded) {
+      this.seedStarterPlots();
+    }
+
     this.applyRainIfNeeded();
 
     this.cameras.main.startFollow(this.player, true, 0.12, 0.12);
     this.cameras.main.setBounds(0, 0, WORLD_WIDTH * TILE_SIZE, WORLD_HEIGHT * TILE_SIZE);
-    this.cameras.main.setZoom(1.2);
+    this.cameras.main.setZoom(1.35);
 
     this.time.addEvent({
       delay: 10000,
@@ -147,6 +154,34 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  addProp(config) {
+    const image = this.add
+      .image(toWorldX(config.x) + (config.offsetX ?? 0), toWorldY(config.y) + (config.yLift ?? 6), config.texture)
+      .setOrigin(0.5, 1)
+      .setDepth((config.depth ?? 4) + config.y * 0.01);
+
+    this.props.push({
+      image,
+      sway: Boolean(config.sway),
+      swayAmount: config.swayAmount ?? 0.5,
+      phase: config.phase ?? 0,
+      baseX: image.x,
+    });
+
+    if (config.lit) {
+      const glow = this.add
+        .image(image.x, image.y - (config.lightYOffset ?? 7), 'light-glow')
+        .setDepth(28)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setAlpha(0);
+
+      this.lanternGlows.push({
+        glow,
+        phase: config.phase ?? 0,
+      });
+    }
+  }
+
   createDecorations() {
     for (let y = 0; y < WORLD_HEIGHT; y += 1) {
       for (let x = 0; x < WORLD_WIDTH; x += 1) {
@@ -159,40 +194,106 @@ export class GameScene extends Phaser.Scene {
         }
 
         const roll = coordNoise(x, y, 211);
-        let texture = null;
-        let sway = false;
-        let yLift = 5;
 
-        if (roll > 0.988) {
-          texture = coordNoise(x, y, 223) > 0.5 ? 'deco-bush-0' : 'deco-bush-1';
-          yLift = 8;
-        } else if (roll > 0.965) {
-          texture = coordNoise(x, y, 227) > 0.5 ? 'deco-flower-0' : 'deco-flower-1';
-          sway = true;
-          yLift = 6;
-        } else if (roll > 0.953) {
-          texture = 'deco-rock-0';
-          yLift = 4;
-        }
-
-        if (!texture) {
+        if (roll > 0.995) {
+          const texture = coordNoise(x, y, 219) > 0.5 ? 'deco-tree-0' : 'deco-tree-1';
+          this.addProp({
+            x,
+            y,
+            texture,
+            yLift: 18,
+            depth: 5,
+            sway: true,
+            swayAmount: 0.8,
+            phase: coordNoise(x, y, 233) * Math.PI * 2,
+          });
           continue;
         }
 
-        const offsetX = (coordNoise(x, y, 233) - 0.5) * 8;
-        const offsetY = (coordNoise(x, y, 239) - 0.5) * 4;
+        if (roll > 0.983) {
+          const texture = coordNoise(x, y, 223) > 0.5 ? 'deco-bush-0' : 'deco-bush-1';
+          this.addProp({
+            x,
+            y,
+            texture,
+            yLift: 8,
+            depth: 4.5,
+          });
+          continue;
+        }
 
-        const image = this.add
-          .image(toWorldX(x) + offsetX, toWorldY(y) + yLift + offsetY, texture)
-          .setOrigin(0.5, 1)
-          .setDepth(4 + y * 0.01);
+        if (roll > 0.964) {
+          const texture = coordNoise(x, y, 227) > 0.5 ? 'deco-flower-0' : 'deco-flower-1';
+          this.addProp({
+            x,
+            y,
+            texture,
+            yLift: 6,
+            depth: 4.2,
+            sway: true,
+            swayAmount: 0.6,
+            phase: coordNoise(x, y, 241) * Math.PI * 2,
+          });
+          continue;
+        }
 
-        this.decorSprites.push({
-          image,
-          baseX: image.x,
-          phase: coordNoise(x, y, 241) * Math.PI * 2,
-          sway,
-        });
+        if (roll > 0.953) {
+          this.addProp({
+            x,
+            y,
+            texture: 'deco-rock-0',
+            yLift: 4,
+            depth: 4.1,
+          });
+        }
+      }
+    }
+  }
+
+  createSetPieces() {
+    const props = [
+      { x: 9, y: 10, texture: 'deco-barrel-0', yLift: 8 },
+      { x: 10, y: 10, texture: 'deco-barrel-0', yLift: 8 },
+      { x: 12, y: 10, texture: 'deco-crate-0', yLift: 8 },
+      { x: 14, y: 10, texture: 'deco-crate-0', yLift: 8 },
+      { x: 6, y: 12, texture: 'deco-lantern-0', yLift: 8, lit: true },
+      { x: 7, y: 12, texture: 'deco-lantern-0', yLift: 8, lit: true, phase: 1.2 },
+      { x: 48, y: 15, texture: 'deco-lantern-0', yLift: 8, lit: true, phase: 2.1 },
+      { x: 50, y: 15, texture: 'deco-lantern-0', yLift: 8, lit: true, phase: 0.4 },
+      { x: 56, y: 25, texture: 'deco-crate-0', yLift: 8 },
+      { x: 57, y: 25, texture: 'deco-barrel-0', yLift: 8 },
+      { x: 58, y: 25, texture: 'deco-barrel-0', yLift: 8 },
+    ];
+
+    for (const prop of props) {
+      this.addProp(prop);
+    }
+  }
+
+  seedStarterPlots() {
+    for (let y = 12; y <= 18; y += 1) {
+      for (let x = 6; x <= 23; x += 1) {
+        if ((x + y) % 4 === 0) {
+          continue;
+        }
+
+        const plot = this.getOrCreatePlot(x, y);
+        plot.tilled = true;
+        plot.crop = 'parsnip';
+        const roll = coordNoise(x, y, 307);
+        if (roll > 0.7) {
+          plot.growth = 2;
+          plot.ready = true;
+        } else if (roll > 0.36) {
+          plot.growth = 1;
+          plot.ready = false;
+        } else {
+          plot.growth = 0;
+          plot.ready = false;
+        }
+        plot.watered = roll > 0.45;
+
+        this.updatePlotVisual(x, y);
       }
     }
   }
@@ -223,8 +324,8 @@ export class GameScene extends Phaser.Scene {
     this.npc.label = this.add
       .text(this.npc.sprite.x, this.npc.sprite.y - 24, NPC_NAME, {
         fontSize: '12px',
-        color: '#d6ecff',
-        stroke: '#102335',
+        color: '#f2e0ce',
+        stroke: '#22160f',
         strokeThickness: 3,
       })
       .setOrigin(0.5)
@@ -243,7 +344,7 @@ export class GameScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setDepth(31)
       .setDisplaySize(this.scale.width, this.scale.height)
-      .setAlpha(0.12);
+      .setAlpha(0.15);
 
     this.scale.on('resize', (size) => {
       this.atmosphere.setSize(size.width, size.height);
@@ -281,7 +382,7 @@ export class GameScene extends Phaser.Scene {
     this.uiText = this.add
       .text(22, 18, '', {
         fontSize: '15px',
-        color: '#f5f0e6',
+        color: '#f9ecdc',
         lineSpacing: 6,
       })
       .setScrollFactor(0)
@@ -294,7 +395,7 @@ export class GameScene extends Phaser.Scene {
         'Move WASD/Arrows | Space Tool | E Interact | N Sleep | K/L Save/Load | 1-5 Tools',
         {
           fontSize: '12px',
-          color: '#b6d7d9',
+          color: '#d6ba95',
         }
       )
       .setScrollFactor(0)
@@ -303,7 +404,7 @@ export class GameScene extends Phaser.Scene {
     this.messageText = this.add
       .text(this.scale.width / 2, this.scale.height - 18, '', {
         fontSize: '14px',
-        color: '#ffe8a9',
+        color: '#ffe2aa',
         stroke: '#1a1208',
         strokeThickness: 4,
       })
@@ -649,7 +750,7 @@ export class GameScene extends Phaser.Scene {
 
   updateAmbientVisuals(delta) {
     this.waterAnimClock += delta;
-    this.windClock += delta * 0.0032;
+    this.windClock += delta * 0.0033;
 
     if (this.waterAnimClock >= 220) {
       this.waterAnimClock = 0;
@@ -664,7 +765,14 @@ export class GameScene extends Phaser.Scene {
       if (!deco.sway) {
         continue;
       }
-      deco.image.x = deco.baseX + Math.sin(this.windClock + deco.phase) * 0.7;
+      deco.image.x = deco.baseX + Math.sin(this.windClock + deco.phase) * deco.swayAmount;
+    }
+
+    for (const prop of this.props) {
+      if (!prop.sway) {
+        continue;
+      }
+      prop.image.x = prop.baseX + Math.sin(this.windClock + prop.phase) * prop.swayAmount;
     }
 
     for (const visual of Object.values(this.plotVisuals)) {
@@ -674,41 +782,76 @@ export class GameScene extends Phaser.Scene {
 
       const sway = Math.sin(this.windClock + visual.phase);
       const suffix = sway > 0 ? 'b' : 'a';
-      visual.crop.x = visual.baseX + sway * 0.55;
+      visual.crop.x = visual.baseX + sway * 0.45;
       visual.crop.setTexture(`crop-${visual.stage}-${suffix}`);
+    }
+
+    const nightFactor = this.getNightFactor();
+    for (const lantern of this.lanternGlows) {
+      const pulse = 0.82 + Math.sin(this.windClock * 1.7 + lantern.phase * 2) * 0.18;
+      lantern.glow.setAlpha(nightFactor * 0.52 * pulse);
     }
 
     this.updateAtmosphere();
   }
 
+  getNightFactor() {
+    const hour = this.totalMinutes / 60;
+
+    if (hour >= 22 || hour < 5) {
+      return 1;
+    }
+
+    if (hour >= 18 && hour < 22) {
+      return (hour - 18) / 4;
+    }
+
+    if (hour >= 5 && hour < 8) {
+      return 1 - (hour - 5) / 3;
+    }
+
+    return 0;
+  }
+
   updateAtmosphere() {
     const hour = this.totalMinutes / 60;
     let alpha = 0.05;
-    let color = 0x1d2c41;
+    let color = 0x8a4e2d;
 
     if (hour < 5) {
+      color = 0x1b2342;
       alpha = 0.34;
     } else if (hour < 8) {
-      alpha = Phaser.Math.Linear(0.34, 0.06, (hour - 5) / 3);
-    } else if (hour < 17) {
-      alpha = 0.05;
-    } else if (hour < 20) {
-      alpha = Phaser.Math.Linear(0.07, 0.28, (hour - 17) / 3);
+      const t = (hour - 5) / 3;
+      color = 0x7c5132;
+      alpha = Phaser.Math.Linear(0.28, 0.06, t);
+    } else if (hour < 16) {
+      color = 0x8a4e2d;
+      alpha = 0.03;
+    } else if (hour < 19.5) {
+      const t = (hour - 16) / 3.5;
+      color = 0x6d3522;
+      alpha = Phaser.Math.Linear(0.06, 0.21, t);
+    } else if (hour < 22) {
+      const t = (hour - 19.5) / 2.5;
+      color = 0x24294a;
+      alpha = Phaser.Math.Linear(0.21, 0.33, t);
     } else {
-      alpha = 0.29;
+      color = 0x1b2342;
+      alpha = 0.34;
     }
 
     if (this.weather === 'Cloudy') {
-      alpha += 0.04;
-      color = 0x25354a;
+      alpha += 0.03;
+      color = 0x3d3f4f;
     } else if (this.weather === 'Rainy') {
-      alpha += 0.09;
-      color = 0x2d4260;
+      alpha += 0.08;
+      color = 0x344661;
     }
 
     this.atmosphere.fillColor = color;
-    this.atmosphere.fillAlpha = Phaser.Math.Clamp(alpha, 0, 0.45);
-    this.vignette.setAlpha(0.11 + this.atmosphere.fillAlpha * 1.15);
+    this.atmosphere.fillAlpha = Phaser.Math.Clamp(alpha, 0, 0.48);
+    this.vignette.setAlpha(0.12 + this.atmosphere.fillAlpha * 1.1);
   }
 
   updateCharacterAnimations(seconds) {
@@ -802,7 +945,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.plotVisuals[key]) {
       this.plotVisuals[key] = {
         soil: this.add.image(toWorldX(x), toWorldY(y), 'tile-soil-dry').setDepth(1.1).setVisible(false),
-        crop: this.add.image(toWorldX(x), toWorldY(y), 'crop-1-a').setDepth(3.2).setVisible(false),
+        crop: this.add.image(toWorldX(x), toWorldY(y), 'crop-1-a').setDepth(3.3).setVisible(false),
         baseX: toWorldX(x),
         phase: coordNoise(x, y, 271) * Math.PI * 2,
         stage: 1,
