@@ -2,13 +2,14 @@ import Phaser from 'phaser';
 import {
   NPC_NAME,
   TILE_SIZE,
-  TILE_TEXTURES,
+  TILE_TYPES,
   TOOL_LABELS,
   TOOL_ORDER,
   WEATHER_TYPES,
   WORLD_HEIGHT,
   WORLD_WIDTH,
 } from '../constants';
+import { coordNoise, getTileTextureKey } from '../art';
 import { createWorldData } from '../world';
 import { loadGameState, saveGameState } from '../save';
 
@@ -44,6 +45,14 @@ function chooseNextWeather(rng) {
   return WEATHER_TYPES[0];
 }
 
+function directionFromFacing(facing) {
+  if (Math.abs(facing.x) > Math.abs(facing.y)) {
+    return 'side';
+  }
+
+  return facing.y < 0 ? 'up' : 'down';
+}
+
 export class GameScene extends Phaser.Scene {
   constructor() {
     super('GameScene');
@@ -73,16 +82,33 @@ export class GameScene extends Phaser.Scene {
 
     this.npc = {
       sprite: null,
+      shadow: null,
+      label: null,
       friendship: 0,
       lastTalkDay: 0,
       targetIndex: 0,
+      facing: { x: 0, y: 1 },
+      moving: false,
+      animClock: 0,
     };
 
+    this.playerMoving = false;
+    this.playerAnimClock = 0;
+    this.waterAnimClock = 0;
+    this.waterFrame = 0;
+    this.windClock = 0;
+
+    this.waterTiles = [];
+    this.decorSprites = [];
+
     this.drawWorld();
+    this.createDecorations();
     this.createPlayer();
     this.createNpc();
+    this.createAtmosphere();
     this.createInput();
     this.createUI();
+
     this.loadFromStorage();
     this.applyRainIfNeeded();
 
@@ -98,6 +124,9 @@ export class GameScene extends Phaser.Scene {
 
     this.showMessage('Welcome to Cloverfield. Grow crops, meet neighbors, and build your farm.');
     this.refreshUI();
+    this.updateAtmosphere();
+    this.updateCharacterVisual(this.player, 'player', this.facing, false, 0);
+    this.updateCharacterVisual(this.npc.sprite, 'npc', this.npc.facing, false, 0);
   }
 
   drawWorld() {
@@ -105,31 +134,122 @@ export class GameScene extends Phaser.Scene {
     for (let y = 0; y < WORLD_HEIGHT; y += 1) {
       const row = [];
       for (let x = 0; x < WORLD_WIDTH; x += 1) {
-        const texture = TILE_TEXTURES[this.world.tiles[y][x]];
+        const type = this.world.tiles[y][x];
+        const texture = getTileTextureKey(type, x, y, this.waterFrame);
         const tile = this.add.image(toWorldX(x), toWorldY(y), texture).setDepth(0);
         row.push(tile);
+
+        if (type === TILE_TYPES.WATER) {
+          this.waterTiles.push({ image: tile, x, y });
+        }
       }
       this.baseLayer.push(row);
     }
   }
 
+  createDecorations() {
+    for (let y = 0; y < WORLD_HEIGHT; y += 1) {
+      for (let x = 0; x < WORLD_WIDTH; x += 1) {
+        if (this.world.tiles[y][x] !== TILE_TYPES.GRASS) {
+          continue;
+        }
+
+        if (this.world.blocked[y][x] || this.isInFarmPlot(x, y)) {
+          continue;
+        }
+
+        const roll = coordNoise(x, y, 211);
+        let texture = null;
+        let sway = false;
+        let yLift = 5;
+
+        if (roll > 0.988) {
+          texture = coordNoise(x, y, 223) > 0.5 ? 'deco-bush-0' : 'deco-bush-1';
+          yLift = 8;
+        } else if (roll > 0.965) {
+          texture = coordNoise(x, y, 227) > 0.5 ? 'deco-flower-0' : 'deco-flower-1';
+          sway = true;
+          yLift = 6;
+        } else if (roll > 0.953) {
+          texture = 'deco-rock-0';
+          yLift = 4;
+        }
+
+        if (!texture) {
+          continue;
+        }
+
+        const offsetX = (coordNoise(x, y, 233) - 0.5) * 8;
+        const offsetY = (coordNoise(x, y, 239) - 0.5) * 4;
+
+        const image = this.add
+          .image(toWorldX(x) + offsetX, toWorldY(y) + yLift + offsetY, texture)
+          .setOrigin(0.5, 1)
+          .setDepth(4 + y * 0.01);
+
+        this.decorSprites.push({
+          image,
+          baseX: image.x,
+          phase: coordNoise(x, y, 241) * Math.PI * 2,
+          sway,
+        });
+      }
+    }
+  }
+
   createPlayer() {
     const spawn = this.world.spawnTile;
-    this.player = this.add.sprite(toWorldX(spawn.x), toWorldY(spawn.y), 'player').setDepth(8);
+    this.playerShadow = this.add
+      .image(toWorldX(spawn.x), toWorldY(spawn.y) + 9, 'shadow-player')
+      .setDepth(6);
+
+    this.player = this.add
+      .sprite(toWorldX(spawn.x), toWorldY(spawn.y), 'player-down-0')
+      .setDepth(8)
+      .setOrigin(0.5, 0.8);
   }
 
   createNpc() {
     const start = this.world.npcSchedule[0];
-    this.npc.sprite = this.add.sprite(toWorldX(start.x), toWorldY(start.y), 'npc').setDepth(8);
+    this.npc.shadow = this.add
+      .image(toWorldX(start.x), toWorldY(start.y) + 9, 'shadow-npc')
+      .setDepth(6);
+
+    this.npc.sprite = this.add
+      .sprite(toWorldX(start.x), toWorldY(start.y), 'npc-down-0')
+      .setDepth(8)
+      .setOrigin(0.5, 0.8);
+
     this.npc.label = this.add
-      .text(this.npc.sprite.x, this.npc.sprite.y - 18, NPC_NAME, {
+      .text(this.npc.sprite.x, this.npc.sprite.y - 24, NPC_NAME, {
         fontSize: '12px',
-        color: '#d7f0ff',
-        stroke: '#000000',
+        color: '#d6ecff',
+        stroke: '#102335',
         strokeThickness: 3,
       })
       .setOrigin(0.5)
-      .setDepth(9);
+      .setDepth(12);
+  }
+
+  createAtmosphere() {
+    this.atmosphere = this.add
+      .rectangle(0, 0, this.scale.width, this.scale.height, 0x1f2e44, 0)
+      .setOrigin(0)
+      .setScrollFactor(0)
+      .setDepth(30);
+
+    this.vignette = this.add
+      .image(this.scale.width / 2, this.scale.height / 2, 'ui-vignette')
+      .setScrollFactor(0)
+      .setDepth(31)
+      .setDisplaySize(this.scale.width, this.scale.height)
+      .setAlpha(0.12);
+
+    this.scale.on('resize', (size) => {
+      this.atmosphere.setSize(size.width, size.height);
+      this.vignette.setPosition(size.width / 2, size.height / 2);
+      this.vignette.setDisplaySize(size.width, size.height);
+    });
   }
 
   createInput() {
@@ -156,16 +276,12 @@ export class GameScene extends Phaser.Scene {
   }
 
   createUI() {
-    this.uiPanel = this.add
-      .rectangle(10, 10, 430, 132, 0x0a0f14, 0.78)
-      .setOrigin(0)
-      .setScrollFactor(0)
-      .setDepth(50);
+    this.uiPanel = this.add.image(10, 10, 'ui-panel').setOrigin(0).setScrollFactor(0).setDepth(50);
 
     this.uiText = this.add
-      .text(20, 16, '', {
-        fontSize: '16px',
-        color: '#f5efe2',
+      .text(22, 18, '', {
+        fontSize: '15px',
+        color: '#f5f0e6',
         lineSpacing: 6,
       })
       .setScrollFactor(0)
@@ -173,22 +289,22 @@ export class GameScene extends Phaser.Scene {
 
     this.helpText = this.add
       .text(
-        20,
-        110,
-        'Move WASD/Arrows | Space = Tool | E = Context | N = Sleep | K/L = Save/Load | 1-5 = Tool',
+        22,
+        111,
+        'Move WASD/Arrows | Space Tool | E Interact | N Sleep | K/L Save/Load | 1-5 Tools',
         {
           fontSize: '12px',
-          color: '#b9d7d5',
+          color: '#b6d7d9',
         }
       )
       .setScrollFactor(0)
       .setDepth(52);
 
     this.messageText = this.add
-      .text(this.scale.width / 2, this.scale.height - 20, '', {
+      .text(this.scale.width / 2, this.scale.height - 18, '', {
         fontSize: '14px',
-        color: '#ffec9e',
-        stroke: '#000000',
+        color: '#ffe8a9',
+        stroke: '#1a1208',
         strokeThickness: 4,
       })
       .setOrigin(0.5, 1)
@@ -196,7 +312,7 @@ export class GameScene extends Phaser.Scene {
       .setDepth(60);
 
     this.scale.on('resize', (size) => {
-      this.messageText.setPosition(size.width / 2, size.height - 20);
+      this.messageText.setPosition(size.width / 2, size.height - 18);
     });
   }
 
@@ -207,22 +323,32 @@ export class GameScene extends Phaser.Scene {
     this.handleActions();
     this.updateClock(delta);
     this.updateNpc(seconds);
+    this.updateAmbientVisuals(delta);
+    this.updateCharacterAnimations(seconds);
     this.refreshUI();
   }
 
   handleMovement(seconds) {
-    const moveX =
+    const rawX =
       (this.keys.left.isDown || this.keys.leftArrow.isDown ? -1 : 0) +
       (this.keys.right.isDown || this.keys.rightArrow.isDown ? 1 : 0);
-    const moveY =
+    const rawY =
       (this.keys.up.isDown || this.keys.upArrow.isDown ? -1 : 0) +
       (this.keys.down.isDown || this.keys.downArrow.isDown ? 1 : 0);
 
-    const vec = new Phaser.Math.Vector2(moveX, moveY);
+    this.playerMoving = rawX !== 0 || rawY !== 0;
+
+    if (this.playerMoving) {
+      if (Math.abs(rawX) > Math.abs(rawY)) {
+        this.facing = { x: Math.sign(rawX), y: 0 };
+      } else {
+        this.facing = { x: 0, y: Math.sign(rawY) };
+      }
+    }
+
+    const vec = new Phaser.Math.Vector2(rawX, rawY);
     if (vec.lengthSq() > 0) {
       vec.normalize();
-      this.facing.x = Math.round(vec.x);
-      this.facing.y = Math.round(vec.y);
     }
 
     const speed = 120;
@@ -238,6 +364,10 @@ export class GameScene extends Phaser.Scene {
     if (this.canWalk(this.player.x, nextY)) {
       this.player.y = nextY;
     }
+
+    this.playerShadow.setPosition(this.player.x, this.player.y + 9);
+    this.player.setDepth(8 + this.player.y * 0.01);
+    this.playerShadow.setDepth(7 + this.player.y * 0.01);
   }
 
   handleToolSelection() {
@@ -484,14 +614,26 @@ export class GameScene extends Phaser.Scene {
     const dx = targetX - this.npc.sprite.x;
     const dy = targetY - this.npc.sprite.y;
     const dist = Math.hypot(dx, dy);
-    if (dist > 1) {
+
+    this.npc.moving = dist > 1;
+
+    if (this.npc.moving) {
+      if (Math.abs(dx) > Math.abs(dy)) {
+        this.npc.facing = { x: Math.sign(dx), y: 0 };
+      } else {
+        this.npc.facing = { x: 0, y: Math.sign(dy) };
+      }
+
       const speed = 55;
       const move = Math.min(dist, speed * seconds);
       this.npc.sprite.x += (dx / dist) * move;
       this.npc.sprite.y += (dy / dist) * move;
     }
 
-    this.npc.label.setPosition(this.npc.sprite.x, this.npc.sprite.y - 18);
+    this.npc.shadow.setPosition(this.npc.sprite.x, this.npc.sprite.y + 9);
+    this.npc.label.setPosition(this.npc.sprite.x, this.npc.sprite.y - 24);
+    this.npc.sprite.setDepth(8 + this.npc.sprite.y * 0.01);
+    this.npc.shadow.setDepth(7 + this.npc.sprite.y * 0.01);
   }
 
   getScheduleIndexForTime(minutes) {
@@ -505,8 +647,93 @@ export class GameScene extends Phaser.Scene {
     return index;
   }
 
+  updateAmbientVisuals(delta) {
+    this.waterAnimClock += delta;
+    this.windClock += delta * 0.0032;
+
+    if (this.waterAnimClock >= 220) {
+      this.waterAnimClock = 0;
+      this.waterFrame = (this.waterFrame + 1) % 4;
+
+      for (const water of this.waterTiles) {
+        water.image.setTexture(getTileTextureKey(TILE_TYPES.WATER, water.x, water.y, this.waterFrame));
+      }
+    }
+
+    for (const deco of this.decorSprites) {
+      if (!deco.sway) {
+        continue;
+      }
+      deco.image.x = deco.baseX + Math.sin(this.windClock + deco.phase) * 0.7;
+    }
+
+    for (const visual of Object.values(this.plotVisuals)) {
+      if (!visual.crop.visible) {
+        continue;
+      }
+
+      const sway = Math.sin(this.windClock + visual.phase);
+      const suffix = sway > 0 ? 'b' : 'a';
+      visual.crop.x = visual.baseX + sway * 0.55;
+      visual.crop.setTexture(`crop-${visual.stage}-${suffix}`);
+    }
+
+    this.updateAtmosphere();
+  }
+
+  updateAtmosphere() {
+    const hour = this.totalMinutes / 60;
+    let alpha = 0.05;
+    let color = 0x1d2c41;
+
+    if (hour < 5) {
+      alpha = 0.34;
+    } else if (hour < 8) {
+      alpha = Phaser.Math.Linear(0.34, 0.06, (hour - 5) / 3);
+    } else if (hour < 17) {
+      alpha = 0.05;
+    } else if (hour < 20) {
+      alpha = Phaser.Math.Linear(0.07, 0.28, (hour - 17) / 3);
+    } else {
+      alpha = 0.29;
+    }
+
+    if (this.weather === 'Cloudy') {
+      alpha += 0.04;
+      color = 0x25354a;
+    } else if (this.weather === 'Rainy') {
+      alpha += 0.09;
+      color = 0x2d4260;
+    }
+
+    this.atmosphere.fillColor = color;
+    this.atmosphere.fillAlpha = Phaser.Math.Clamp(alpha, 0, 0.45);
+    this.vignette.setAlpha(0.11 + this.atmosphere.fillAlpha * 1.15);
+  }
+
+  updateCharacterAnimations(seconds) {
+    this.playerAnimClock += this.playerMoving ? seconds * 8 : 0;
+    const playerFrame = this.playerMoving ? Math.floor(this.playerAnimClock) % 2 : 0;
+    this.updateCharacterVisual(this.player, 'player', this.facing, this.playerMoving, playerFrame);
+
+    this.npc.animClock += this.npc.moving ? seconds * 6.8 : 0;
+    const npcFrame = this.npc.moving ? Math.floor(this.npc.animClock) % 2 : 0;
+    this.updateCharacterVisual(this.npc.sprite, 'npc', this.npc.facing, this.npc.moving, npcFrame);
+  }
+
+  updateCharacterVisual(sprite, prefix, facing, _moving, frame) {
+    const direction = directionFromFacing(facing);
+    sprite.setTexture(`${prefix}-${direction}-${frame}`);
+
+    if (direction === 'side') {
+      sprite.setFlipX(facing.x < 0);
+    } else {
+      sprite.setFlipX(false);
+    }
+  }
+
   canWalk(x, y) {
-    const radius = 8;
+    const radius = 7;
     const points = [
       { x: x - radius, y: y - radius },
       { x: x + radius, y: y - radius },
@@ -574,8 +801,11 @@ export class GameScene extends Phaser.Scene {
 
     if (!this.plotVisuals[key]) {
       this.plotVisuals[key] = {
-        soil: this.add.image(toWorldX(x), toWorldY(y), 'tile-soil-dry').setDepth(1).setVisible(false),
-        crop: this.add.image(toWorldX(x), toWorldY(y), 'crop-1').setDepth(2).setVisible(false),
+        soil: this.add.image(toWorldX(x), toWorldY(y), 'tile-soil-dry').setDepth(1.1).setVisible(false),
+        crop: this.add.image(toWorldX(x), toWorldY(y), 'crop-1-a').setDepth(3.2).setVisible(false),
+        baseX: toWorldX(x),
+        phase: coordNoise(x, y, 271) * Math.PI * 2,
+        stage: 1,
       };
     }
 
@@ -597,16 +827,20 @@ export class GameScene extends Phaser.Scene {
     visual.crop.setVisible(true);
 
     if (plot.ready) {
-      visual.crop.setTexture('crop-3');
+      visual.stage = 3;
+      visual.crop.setTexture('crop-3-a');
       return;
     }
 
     if (plot.growth <= 0) {
-      visual.crop.setTexture('crop-1');
+      visual.stage = 1;
+      visual.crop.setTexture('crop-1-a');
     } else if (plot.growth === 1) {
-      visual.crop.setTexture('crop-2');
+      visual.stage = 2;
+      visual.crop.setTexture('crop-2-a');
     } else {
-      visual.crop.setTexture('crop-3');
+      visual.stage = 3;
+      visual.crop.setTexture('crop-3-a');
     }
   }
 
@@ -687,10 +921,10 @@ export class GameScene extends Phaser.Scene {
 
     this.uiText.setText(
       [
-        `Day ${this.day} | Time ${this.formatTime()} | Weather ${this.weather}`,
-        `Gold ${this.money}g | Stamina ${this.stamina}/${STAMINA_MAX} (${staminaPct}%)`,
-        `Seeds ${this.inventory.parsnipSeeds} | Parsnips ${this.inventory.parsnip}`,
-        `Tool ${this.selectedTool + 1}: ${TOOL_LABELS[selected]} | ${NPC_NAME} Friendship ${this.npc.friendship}`,
+        `Day ${this.day}  |  ${this.formatTime()}  |  ${this.weather}`,
+        `Gold ${this.money}g  |  Stamina ${this.stamina}/${STAMINA_MAX} (${staminaPct}%)`,
+        `Seeds ${this.inventory.parsnipSeeds}  |  Parsnips ${this.inventory.parsnip}`,
+        `Tool ${this.selectedTool + 1}: ${TOOL_LABELS[selected]}  |  ${NPC_NAME} Bond ${this.npc.friendship}`,
       ].join('\n')
     );
   }
@@ -722,6 +956,7 @@ export class GameScene extends Phaser.Scene {
         lastTalkDay: this.npc.lastTalkDay,
         x: this.npc.sprite.x,
         y: this.npc.sprite.y,
+        facing: this.npc.facing,
       },
       player: {
         x: this.player.x,
@@ -756,16 +991,25 @@ export class GameScene extends Phaser.Scene {
 
     this.npc.friendship = data.npc?.friendship ?? 0;
     this.npc.lastTalkDay = data.npc?.lastTalkDay ?? 0;
+    this.npc.facing = {
+      x: data.npc?.facing?.x ?? 0,
+      y: data.npc?.facing?.y ?? 1,
+    };
+
     if (typeof data.npc?.x === 'number') {
       this.npc.sprite.x = data.npc.x;
+      this.npc.shadow.x = data.npc.x;
     }
     if (typeof data.npc?.y === 'number') {
       this.npc.sprite.y = data.npc.y;
+      this.npc.shadow.y = data.npc.y + 9;
     }
 
     if (typeof data.player?.x === 'number' && typeof data.player?.y === 'number') {
       this.player.x = data.player.x;
       this.player.y = data.player.y;
+      this.playerShadow.x = data.player.x;
+      this.playerShadow.y = data.player.y + 9;
     }
 
     this.facing = {
